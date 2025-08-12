@@ -1,0 +1,70 @@
+# A2A Agent Service - Docker Compose 配置
+# 默认使用 SQLite 数据库，轻量级部署
+services:
+  # Redis 消息队列
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # 主应用服务
+  app:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=sqlite+aiosqlite:///./data/a2a_agent.db
+      - REDIS_URL=redis://redis:6379
+      - DEBUG=True
+      - LOG_LEVEL=INFO
+      - DOCKER_ENV=true
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-demo-key}
+      - ZHIPU_API_KEY=${ZHIPU_API_KEY:-demo-key}
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      - .:/app
+      - sqlite_data:/app/data
+    command: >
+      sh -c "
+        mkdir -p /app/data &&
+        pip install aiosqlite &&
+        python scripts/init_db.py --with-demo-data &&
+        python main.py
+      "
+
+  # Celery Worker 服务
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    environment:
+      - DATABASE_URL=sqlite+aiosqlite:///./data/a2a_agent.db
+      - REDIS_URL=redis://redis:6379
+      - DOCKER_ENV=true
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-demo-key}
+      - ZHIPU_API_KEY=${ZHIPU_API_KEY:-demo-key}
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      - .:/app
+      - sqlite_data:/app/data
+    command: >
+      sh -c "
+        sleep 15 &&
+        pip install aiosqlite &&
+        celery -A src.async_execution.worker_app:celery_app worker --loglevel=info --concurrency=4 --hostname=worker_1@%h
+      "
+
+volumes:
+  redis_data:
+  sqlite_data:
